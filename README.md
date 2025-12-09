@@ -83,7 +83,7 @@ The required python modules can be installed with the installation commands belo
 git clone https://github.com/rabssm/MeteorRadio.git
 
 # Install required apt packages
-sudo apt update && sudo apt install rtl_sdr libopenblas-dev
+sudo apt update && sudo apt install rtl-sdr libopenblas-dev
 
 # Create a virtual environmemt in which to install and run the software
 python -m venv ~/vMeteorRadio
@@ -158,12 +158,12 @@ python monthly_rmob.py -y 2022 -m 10 -o Observer
 
 To get help using the acquisition software, run the command:
 ```
-python meteor_radar.py -h
+~/vMeteorRadio/bin/python meteor_radar.py -h
 ```
 
 To start the acquisition software in verbose mode with a detection threshold SNR of 45, run the command:
 ```
-python meteor_radar.py -v -s 45
+~/vMeteorRadio/bin/python meteor_radar.py -v -s 45
 ```
 
 To analyze the meteor detection FFT data in the .npz files in the output directory ~/radar_data :
@@ -192,6 +192,6 @@ crontab -e
 
 Then add the following line at the end of the crontab (e.g.) :
 ```
-@reboot sleep 60 && python /home/pi/source/MeteorRadar/src/meteor_radar.py -s 45
+@reboot sleep 60 && ~/vMeteorRadio/bin/python -u ~/source/MeteorRadio/src/meteor_radar.py -s 40 -g 50
 ```
 
