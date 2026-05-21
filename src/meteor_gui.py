@@ -1,104 +1,113 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.widgets import Button
-import glob
-import os
-import argparse
-from datetime import datetime, timedelta
 import matplotlib.dates as mdates
+import argparse
+import os
+import glob
+from datetime import datetime, timedelta
 
 RADAR_DIR = os.path.expanduser('~/radar_data/')
 
-def load_files_by_hour(year, month, day):
+def plot_hourly_power_db(year, month, day, hour, interactive_mode):
     date_str = f"{year}{month:02d}{day:02d}"
-    pattern = os.path.join(RADAR_DIR, f"SMP_*_{date_str}_*.npz")
-    files = sorted(glob.glob(pattern))
-    by_hour = {}
-    for f in files:
+    search_pattern = os.path.join(RADAR_DIR, f"SMP_*_{date_str}_*.npz")
+    npz_files = sorted(glob.glob(search_pattern))
+    
+    if not npz_files:
+        print(f"No .npz files found for {date_str}")
+        return
+    
+    # Group by hour
+    files_by_hour = {}
+    for file in npz_files:
         try:
-            with np.load(f) as data:
-                t_str = data['obs_time'].item()
-                t = datetime.strptime(t_str, '%Y-%m-%d %H:%M:%S.%f')
-                h = t.hour
-                by_hour.setdefault(h, []).append(f)
+            with np.load(file) as data:
+                obs_time_str = data['obs_time'].item()
+                dt = datetime.strptime(obs_time_str, '%Y-%m-%d %H:%M:%S.%f')
+                h = dt.hour
+                if hour != -1 and h != hour:
+                    continue
+                if h not in files_by_hour:
+                    files_by_hour[h] = []
+                files_by_hour[h].append(file)
         except Exception:
             continue
-    return by_hour
-
-# --- Main GUI ---
-class MeteorGUI:
-    def __init__(self, year, month, day):
-        self.year = year
-        self.month = month
-        self.day = day
-        self.files_by_hour = load_files_by_hour(year, month, day)
-        self.hours = sorted(self.files_by_hour.keys())
-        
-        if not self.hours:
-            print("No data found for this date!")
-            return
-        
-        print(f"Found data for hours: {self.hours}")
-        
-        self.fig, self.ax = plt.subplots(figsize=(15, 8))
-        plt.subplots_adjust(bottom=0.2)
-        
-        self.buttons = []
-        button_width = 0.07
-        button_height = 0.07
-        start_x = 0.05
-        
-        for i, h in enumerate(self.hours):
-            ax_button = plt.axes([start_x + i * (button_width + 0.01), 0.05, button_width, button_height])
-            btn = Button(ax_button, f'{h:02d}h', hovercolor='lightgray')
-            btn.on_clicked(lambda event, hh=h: self.plot_hour(hh))
-            self.buttons.append(btn)
-        
-        self.plot_hour(self.hours[0])  # initial plot
-        plt.show()
     
-    def plot_hour(self, hour):
-        self.ax.clear()
-        files = self.files_by_hour[hour]
-        print(f"Plotting hour {hour:02d} — {len(files)} captures")
+    hours_to_plot = sorted(files_by_hour.keys()) if hour == -1 else [hour] if hour in files_by_hour else []
+    
+    if not hours_to_plot:
+        print("No data for the specified hour.")
+        return
+    
+    for h in hours_to_plot:
+        fig, ax = plt.subplots(figsize=(15, 8))
+        files = files_by_hour[h]
+        print(f"Hour {h:02d}: Combining {len(files)} files...")
+        
+        all_t = []
+        all_power_db = []
         
         for file in files:
             try:
                 with np.load(file) as data:
+                    obs_time_str = data['obs_time'].item()
+                    sample_rate = data['sample_rate'].item()
                     samples = data['samples']
+                    
                     if len(samples) == 0:
                         continue
                     
-                    freq = data['centre_freq'].item() / 1e6
-                    rate = data['sample_rate'].item()
-                    start_time = datetime.strptime(data['obs_time'].item(), '%Y-%m-%d %H:%M:%S.%f')
+                    # Remove DC bias
+                    i_mean = np.mean(samples.real)
+                    q_mean = np.mean(samples.imag)
+                    samples -= (i_mean + 1j * q_mean)
                     
-                    # Downsample to ~10k points max
-                    ds = max(1, len(samples) // 10000)
-                    power_db = 10 * np.log10(np.abs(samples[::ds])**2 + 1e-12)
+                    # Power in dB
+                    power_linear = np.abs(samples)**2
+                    power_db = 10 * np.log10(power_linear + 1e-12)
                     
-                    duration = len(samples) / rate
-                    t_rel = np.linspace(0, duration, len(power_db))
-                    t_abs = [start_time + timedelta(seconds=s) for s in t_rel]
+                    # Time vector
+                    duration = len(samples) / sample_rate
+                    t_relative = np.linspace(0, duration, len(power_db))
+                    dt_start = datetime.strptime(obs_time_str, '%Y-%m-%d %H:%M:%S.%f')
+                    t_absolute = [dt_start + timedelta(seconds=s) for s in t_relative]
                     
-                    self.ax.plot(t_abs, power_db, linewidth=1, alpha=0.7)
+                    # Append to combined data
+                    all_t.extend(t_absolute)
+                    all_power_db.extend(power_db)
                     
             except Exception as e:
-                print(f"Error loading {os.path.basename(file)}: {e}")
+                print(f"Error in {os.path.basename(file)}: {e}")
         
-        self.ax.set_title(f'IQ Power (dB) vs Time — {self.year}-{self.month:02d}-{self.day:02d} Hour {hour:02d} UTC')
-        self.ax.set_xlabel('UTC Time')
-        self.ax.set_ylabel('Power (dB, arbitrary)')
-        self.ax.grid(True, alpha=0.4)
-        self.ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
-        self.fig.autofmt_xdate()
-        self.fig.canvas.draw()
+        if all_t:
+            ax.plot(all_t, all_power_db, linewidth=1, alpha=0.8)
+            
+            ax.set_title(f'Combined IQ Power (dB) vs. Time - {year}-{month:02d}-{day:02d} Hour {h:02d} UTC')
+            ax.set_xlabel('UTC Time')
+            ax.set_ylabel('Power (dB, arbitrary)')
+            ax.grid(True, alpha=0.4)
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+            ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+            fig.autofmt_xdate()
+            
+            if interactive_mode:
+                plt.show()
+            else:
+                output = os.path.join(RADAR_DIR, f'power_db_combined_h{h:02d}_{year}{month:02d}{day:02d}.png')
+                plt.savefig(output, dpi=150)
+                print(f"Plot for hour {h:02d} saved to {output}")
+        else:
+            print(f"No data for hour {h:02d}")
+        
+        plt.close(fig)  # Free memory
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Standalone GUI for meteor scatter power plots (hour buttons)")
-    parser.add_argument("-y", "--year", type=int, required=True, help="Year (e.g. 2025)")
-    parser.add_argument("-m", "--month", type=int, required=True, help="Month (e.g. 12)")
-    parser.add_argument("-d", "--day", type=int, required=True, help="Day (e.g. 29)")
+    parser = argparse.ArgumentParser(description="Combined power in dB vs time from .npz files, per hour.")
+    parser.add_argument("-y", "--year", type=int, required=True)
+    parser.add_argument("-m", "--month", type=int, required=True)
+    parser.add_argument("-d", "--day", type=int, required=True)
+    parser.add_argument("-hr", "--hour", type=int, default=-1, help="Specific hour (0-23) or -1 for all")
+    parser.add_argument("-i", "--interactive", action='store_true')
     args = parser.parse_args()
     
-    gui = MeteorGUI(args.year, args.month, args.day)
+    plot_hourly_power_db(args.year, args.month, args.day, args.hour, args.interactive)
